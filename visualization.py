@@ -1,10 +1,12 @@
 import matplotlib.pyplot as plt
 
 
-def plot_image(np_image):
+def plot_image(np_image, title=None):
 	plt.figure()
 	cmap = "gray" if len(np_image.shape)==2 else None
 	plt.imshow(np_image, cmap=cmap)
+	if title is not None:
+		plt.title(title)
 
 
 def plot_scene(img_l, img_r, d_l, d):

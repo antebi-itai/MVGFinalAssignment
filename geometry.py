@@ -1,5 +1,7 @@
 import numpy as np
 
+import utils
+
 
 def get_image_center(h, w):
 	x_0 = w // 2 - 0.5 * (w % 2)
@@ -33,3 +35,52 @@ def get_camera_matrices(focal_length, base_line, x_0, y_0):
 	calibrated_P = np.concatenate((np.eye(3), np.array([[-base_line, 0, 0]]).T), axis=1)
 	P = np.matmul(K, calibrated_P)
 	return P, K
+
+
+def project_points(points, P):
+	return utils.pflat(np.matmul(P, points))
+
+
+def novel_view_image(points, point_colors, P, h, w):
+	"""
+	Generate a 2D image viewing a scene with 3D points
+	:param points: ndarray of shape [4, n_points], the 3D points
+	:param point_colors. ndarray of shapes [n_points, 3]
+	:param P: ndarray of shape [3, 4], the camera observing the novel view
+	"""
+	assert (len(points.shape) == 2) and (points.shape[0] == 4)
+	assert (len(point_colors.shape) == 2) and (point_colors.shape[1] == 3)
+	assert points.shape[1] == point_colors.shape[0]
+	# project 3d points onto image plane
+	projected_points = project_points(points, P)[:2]
+	# sort points from farthest to nearest
+	point_sort_order = np.flip(np.argsort(points[-2]))
+	sorted_projected_points = projected_points.T[point_sort_order, :]
+	sorted_point_colors = point_colors[point_sort_order, :]
+	# paint the new image
+	image = np.zeros((h, w, 3))
+	for (x, y), color in zip(sorted_projected_points, sorted_point_colors):
+		x, y = np.rint(x).astype(np.int32), np.rint(y).astype(np.int32)
+		if (0 <= x < w) and (0 <= y < h):
+			image[round(y)][round(x)] = color
+	return image
+
+
+def remove_black_stripes(image):
+	image = np.copy(image)
+	h, w, _ = image.shape
+	for i in range(h):
+		for j in range(w):
+			# if pixel is empty
+			if (image[i][j] == np.zeros(3)).all():
+				surrounding_pixels = []
+				for ii in [-1, 0, 1]:
+					for jj in [-1, 0, 1]:
+						if (0 <= i + ii < h) and (0 <= j + jj < w) and not (ii == 0 and jj == 0):
+							surrounding_pixels.append(image[i + ii][j + jj])
+				surrounding_pixels = np.stack(surrounding_pixels, axis=0)
+				# and most of his surrounding is not empty
+				if np.count_nonzero((surrounding_pixels!=0).all(axis=1)) > len(surrounding_pixels) / 2:
+					# fill the pixel with mean of non-empty surroundings
+					image[i][j] = np.mean(surrounding_pixels[(surrounding_pixels != 0).all(axis=1)], axis=0)
+	return image

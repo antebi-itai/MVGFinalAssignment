@@ -5,7 +5,9 @@ import os
 FOCAL_LENGTH = 3740
 BASELINE = 0.16
 SCENES_WITH_GT_DISPARITIES = ["Aloe", "Flowerpots", "Bowling1"]
+SCENES_WITHOUT_GT_DISPARITIES = [scene for scene in os.listdir(os.path.join(".", "data")) if scene not in SCENES_WITH_GT_DISPARITIES]
 CHOSEN_GT_SCENE_INDEX = 0
+CHOSEN_WITHOUT_GT_SCENE_INDEX = -4
 
 
 def read_image(image_path):

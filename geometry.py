@@ -1,5 +1,4 @@
 import numpy as np
-
 import utils
 
 
@@ -84,3 +83,12 @@ def remove_black_stripes(image):
 					# fill the pixel with mean of non-empty surroundings
 					image[i][j] = np.mean(surrounding_pixels[(surrounding_pixels != 0).all(axis=1)], axis=0)
 	return image
+
+
+def mask_for_3d_points(points_1, P_2, max_depth, h, w):
+	projected_on_2 = project_points(points_1.reshape(4, h*w), P_2).reshape(3, h, w)
+	x_s, y_s, _ = projected_on_2
+	mask_seen_by_2 = np.logical_and((x_s < w), (y_s < h))
+	mask_close = (points_1[2] < max_depth)
+	mask = np.logical_and(mask_close, mask_seen_by_2)
+	return mask

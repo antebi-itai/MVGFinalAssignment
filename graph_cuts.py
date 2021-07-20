@@ -1,5 +1,13 @@
 import numpy as np
+from pygco import cut_from_graph
 import utils
+import data
+import evaluation
+import visualization
+import geometry
+
+K = 15
+MAX_DEPTH_IN_IMAGE = 50
 
 
 def get_flatten_index(width, i, j):
@@ -42,3 +50,48 @@ def unary_cost(right_image, left_image, max_disp=80):
 							   for disparity in range(1, max_disp + 1)],
 							  axis=-1)
 	return unary_cost_box.reshape(h * w, max_disp).astype(np.int32)
+
+
+def images_to_disparity_map_and_3d_scene(scene, get_edges_fn, get_pairwise_cost_fn, get_unary_cost_fn,
+										 P_l, P_r, K_l, K_r, subsection="4.2"):
+	print("Scene {0}:".format(scene))
+	# read images of scene
+	img_l, img_r = data.get_scene_images(scene)
+	assert (img_l.shape == img_r.shape) and (len(img_l.shape) == 3) and (img_l.shape[-1] == 3)
+	h, w, _ = img_l.shape
+	x_0, y_0 = geometry.get_image_center(h=h, w=w)
+
+	# obtain disparity map using graph-cuts
+	edges = get_edges_fn(height=h, width=w)
+	pairwise_cost_mat = get_pairwise_cost_fn(K=K)
+	unary_cost_mat = get_unary_cost_fn(right_image=img_r, left_image=img_l)
+	disparity = cut_from_graph(edges=edges,
+							   unary_cost=unary_cost_mat, #np.zeros((157990, 80), dtype=np.int32),
+							   pairwise_cost=pairwise_cost_mat, #np.zeros((80, 80), dtype=np.int32),
+							   algorithm="expansion")
+	disparity = disparity.reshape(h, w)
+
+	# calculate accuracy / outlier ratio if possible
+	if scene in data.SCENES_WITH_GT_DISPARITIES:
+		d_l, d = data.get_scene_disparities(scene)
+		accuracy, outlier_ration = evaluation.evaluate_disparity(gt_disparity=d, pred_disparity=disparity)
+		print("accuracy = {:.2f} \noutlier_ration = {:.2f}".format(accuracy, outlier_ration))
+
+	# show disparity map
+	visualization.plot_image(disparity)
+
+	# calculate 3d points
+	points_r = geometry.get_3d_points_from_disparities(disparity_map=disparity,
+													   focal_length=data.FOCAL_LENGTH, base_line=data.BASELINE,
+													   x_0=x_0, y_0=y_0,
+													   right_image=True)
+
+	# filter out points that are not seen by the left camera / very far points
+	mask = geometry.mask_for_3d_points(points_1=points_r, P_2=P_l, max_depth=MAX_DEPTH_IN_IMAGE, h=h, w=w)
+
+	# plot the 3D points and the camera
+	utils.plot_cameras(P=np.stack((P_l, P_r), axis=0),
+					   K=np.stack((K_l, K_r), axis=0),
+					   X=points_r.reshape(4, h*w)[:, mask.reshape(h*w)],
+					   title="{subsection}_3D_plot_{scene}".format(subsection=subsection, scene=scene),
+					   point_colors=img_r.reshape(h*w, 3)[mask.reshape(h*w)])

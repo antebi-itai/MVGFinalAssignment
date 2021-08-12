@@ -11,8 +11,8 @@ CHOSEN_WITHOUT_GT_SCENE_INDEX = -4
 
 
 def read_image(image_path):
-	PIL_image = Image.open(image_path)
-	np_image = np.array(PIL_image)
+	pil_image = Image.open(image_path)
+	np_image = np.array(pil_image)
 	return np_image
 
 

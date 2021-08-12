@@ -2,10 +2,21 @@ import numpy as np
 import utils
 
 
+# ---------- 3.2  3D Plot ---------- #
+
 def get_image_center(h, w):
-	x_0 = w // 2 - 0.5 * (w % 2)
-	y_0 = h // 2 - 0.5 * (h % 2)
+	x_0 = w // 2 - 0.5 * ((w + 1) % 2)
+	y_0 = h // 2 - 0.5 * ((h + 1) % 2)
 	return x_0, y_0
+
+
+def get_camera_matrices(focal_length, base_line, x_0, y_0):
+	K = np.array([[focal_length, 0, x_0],
+				  [0, focal_length, y_0],
+				  [0, 0, 1]])
+	calibrated_P = np.concatenate((np.eye(3), np.array([[-base_line, 0, 0]]).T), axis=1)
+	P = np.matmul(K, calibrated_P)
+	return P, K
 
 
 def get_3d_points_from_disparities(disparity_map, focal_length, base_line, x_0, y_0, right_image=True):
@@ -27,14 +38,7 @@ def get_3d_points_from_disparities(disparity_map, focal_length, base_line, x_0, 
 	return points
 
 
-def get_camera_matrices(focal_length, base_line, x_0, y_0):
-	K = np.array([[focal_length, 0, x_0],
-				  [0, focal_length, y_0],
-				  [0, 0, 1]])
-	calibrated_P = np.concatenate((np.eye(3), np.array([[-base_line, 0, 0]]).T), axis=1)
-	P = np.matmul(K, calibrated_P)
-	return P, K
-
+# ---------- 3.3  Novel View ---------- #
 
 def project_points(points, P):
 	return utils.pflat(np.matmul(P, points))
@@ -61,7 +65,7 @@ def novel_view_image(points, point_colors, P, h, w):
 	for (x, y), color in zip(sorted_projected_points, sorted_point_colors):
 		x, y = np.rint(x).astype(np.int32), np.rint(y).astype(np.int32)
 		if (0 <= x < w) and (0 <= y < h):
-			image[round(y)][round(x)] = color
+			image[y][x] = color
 	return image
 
 
@@ -79,16 +83,7 @@ def remove_black_stripes(image):
 							surrounding_pixels.append(image[i + ii][j + jj])
 				surrounding_pixels = np.stack(surrounding_pixels, axis=0)
 				# and most of his surrounding is not empty
-				if np.count_nonzero((surrounding_pixels!=0).all(axis=1)) > len(surrounding_pixels) / 2:
+				if np.count_nonzero((surrounding_pixels != 0).all(axis=1)) > len(surrounding_pixels) / 2:
 					# fill the pixel with mean of non-empty surroundings
 					image[i][j] = np.mean(surrounding_pixels[(surrounding_pixels != 0).all(axis=1)], axis=0)
 	return image
-
-
-def mask_for_3d_points(points_1, P_2, max_depth, h, w):
-	projected_on_2 = project_points(points_1.reshape(4, h*w), P_2).reshape(3, h, w)
-	x_s, y_s, _ = projected_on_2
-	mask_seen_by_2 = np.logical_and((x_s < w), (y_s < h))
-	mask_close = (points_1[2] < max_depth)
-	mask = np.logical_and(mask_close, mask_seen_by_2)
-	return mask

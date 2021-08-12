@@ -8,9 +8,12 @@ def pflat(x):
 
 
 def rgb2grey(img):
+    assert len(img.shape) == 3 and img.shape[-1] == 3, "image must be in HxWx3 form"
     # gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
-    return np.dot(img[..., :3], [0.299, 0.587, 0.114])
+    return np.dot(img, [0.299, 0.587, 0.114])
 
+
+# ---------- plot cameras ---------- #
 
 def decompose_camera_matrix(P, K):
     """
@@ -24,26 +27,6 @@ def decompose_camera_matrix(P, K):
     Rs = np.transpose(Rt[:, :, :3],(0,2,1))
     ts = np.squeeze(-Rs @ np.expand_dims(Rt[:, 0:3, 3], axis=-1))
     return Rs, ts
-
-
-def plot_cameras(P, K, X, title='reconstruction', point_colors='#3366CC'):
-    """
-    Plot a 3D image of the points and cameras
-    :param P: ndarray of shape [n_cam, 3, 4], the cameras
-    :param K: ndarray of shape [n_cam, 3, 3], the calibration matrices
-    :param X: ndarray of shape [4, n_points], the predicted 3D points
-    :param title: the name of the plot
-    :param plotly color. Can by an ndarray of shapes [N_points, 3]
-    """
-    R,t = decompose_camera_matrix(P, K)
-    data = []
-    data.append(get_3D_quiver_trace(t, R[:, :3, 2], color='#86CE00', name='cam_learn'))
-    data.append(get_3D_scater_trace(t.T, color='#86CE00', name='cam_learn', size=1))
-    data.append(get_3D_scater_trace(X[:3,:], point_colors, '3D points', size=0.5))
-
-    fig = go.Figure(data=data)
-    path = title+'.html'
-    plotly.offline.plot(fig, filename=path, auto_open=False)
 
 
 def get_3D_quiver_trace(points, directions, color='#bd1540', name=''):
@@ -86,3 +69,23 @@ def get_3D_scater_trace(points, color, name='3d_points',size=0.5):
         )
     )
     return trace
+
+
+def plot_cameras(P, K, X, title='reconstruction', point_colors='#3366CC'):
+    """
+    Plot a 3D image of the points and cameras
+    :param P: ndarray of shape [n_cam, 3, 4], the cameras
+    :param K: ndarray of shape [n_cam, 3, 3], the calibration matrices
+    :param X: ndarray of shape [4, n_points], the predicted 3D points
+    :param title: the name of the plot
+    :param plotly color. Can by an ndarray of shapes [N_points, 3]
+    """
+    R,t = decompose_camera_matrix(P, K)
+    data = []
+    data.append(get_3D_quiver_trace(t, R[:, :3, 2], color='#86CE00', name='cam_learn'))
+    data.append(get_3D_scater_trace(t.T, color='#86CE00', name='cam_learn', size=1))
+    data.append(get_3D_scater_trace(X[:3,:], point_colors, '3D points', size=0.5))
+
+    fig = go.Figure(data=data)
+    path = title+'.html'
+    plotly.offline.plot(fig, filename=path, auto_open=False)

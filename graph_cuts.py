@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision
 import matplotlib
 from pygco import cut_from_graph
 import utils
@@ -67,6 +68,38 @@ def NCC(right_image_patches, left_image_patches, disparity):
 	unary_cost_map = np.nanmean(unary_cost_map_multiplied, axis=2)
 	NCC = np.where(should_be_nans, np.nan, unary_cost_map)
 	return NCC
+
+
+def feature_extractor(np_image, model="resnet"):
+	# move to tensor
+	h, w, c = np_image.shape
+	x = torch.tensor(np_image / 255).permute(2, 0, 1).unsqueeze(0).float()
+
+	# get model and hook layer
+	key = "Result_1"
+	intermediate_results = {}
+	def get_activation(name):
+		def hook(model, input, output):
+			intermediate_results[name] = output.detach()
+		return hook
+	if model=="resnet":
+		model = torchvision.models.resnet18(pretrained=True)
+		model.conv1.register_forward_hook(get_activation(key))
+	elif model=="vgg":
+		model = torchvision.models.vgg19(pretrained=True)
+		model.features[1].register_forward_hook(get_activation(key))
+	else:
+		raise NotImplementedError()
+
+	# pass through
+	with torch.no_grad():
+		output = model(x)
+
+	# return interpolated intermediate results
+	intermediate_result = intermediate_results[key]
+	tensor_output = F.interpolate(intermediate_result, size=(h, w), mode="bicubic")
+	output = np.array(tensor_output.squeeze().permute(1, 2, 0)) * 255
+	return output
 
 
 # ---------- 4  edges ---------- #
@@ -158,6 +191,20 @@ def unary_cost_patches(right_image, left_image, max_disp=MAX_DISP, scale=1, kern
 			raise NotImplementedError("dist_method must be either \"SAD\" or \"NCC\"")
 	unary_cost_box = np.stack(unary_cost_maps, axis=-1)
 
+	unary_cost_box *= scale
+	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
+
+
+def unary_cost_features(right_image, left_image, max_disp=MAX_DISP, scale=1, model="resnet"):
+	""" 4.3.b - unary_cost_colored """
+	assert (right_image.shape == left_image.shape) and (len(right_image.shape) == 3) and (right_image.shape[-1] == 3)
+	h, w, _ = right_image.shape
+
+	right_image_features = feature_extractor(right_image, model=model)
+	left_image_features = feature_extractor(left_image, model=model)
+	unary_cost_box = np.stack([np.linalg.norm(right_image_features - shift_image(left_image_features, disparity_x=-disparity), axis=2)
+							   for disparity in range(max_disp)],
+							  axis=-1)
 	unary_cost_box *= scale
 	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
 

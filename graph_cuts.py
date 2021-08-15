@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from skimage import color
+import matplotlib
 from pygco import cut_from_graph
 import utils
 import data
@@ -33,18 +33,46 @@ def disparity_mat_to_int32(disparity_mat):
 
 
 def unfold(np_image, kernel_size):
-	h, w, _ = np_image.shape
+	h, w, c = np_image.shape
 	tensor_image = torch.tensor(np_image).permute(2, 0, 1)
-	tensor_patches = F.unfold(tensor_image.unsqueeze(0), kernel_size=kernel_size, padding=kernel_size//2).squeeze()
-	tensor_patches = tensor_patches.t().reshape(h, w, 3, kernel_size, kernel_size)
-	tensor_patches = tensor_patches.permute(0, 1, 3, 4, 2). reshape(h, w, kernel_size*kernel_size*3)
+	padded_tensor_image = F.pad(input=tensor_image,
+								pad=(kernel_size//2, kernel_size//2, kernel_size//2, kernel_size//2),
+								value=float('nan'))
+	tensor_patches = F.unfold(padded_tensor_image.unsqueeze(0), kernel_size=kernel_size).squeeze()
+	tensor_patches = tensor_patches.reshape(c, kernel_size, kernel_size, h, w).permute(3, 4, 1, 2, 0).reshape(h, w, kernel_size * kernel_size * c)
 	np_patches = np.array(tensor_patches)
 	return np_patches
 
 
-# ---------- 4.2  edges ---------- #
+def SAD(right_image_patches, left_image_patches, disparity):
+	unary_cost_map_diffs = np.abs(right_image_patches - shift_image(left_image_patches, disparity_x=-disparity))
+	should_be_nans = np.all(np.isnan(unary_cost_map_diffs), axis=2)
+	unary_cost_map = np.nansum(unary_cost_map_diffs, axis=2)
+	SAD = np.where(should_be_nans, np.nan, unary_cost_map)
+	return SAD
+
+
+def normalize(image_patches):
+	norm_image_patches = image_patches.copy()
+	norm_image_patches -= np.expand_dims(np.nanmean(image_patches, axis=2), axis=2)
+	norm_image_patches /= np.expand_dims(np.nanstd(norm_image_patches, axis=2), axis=2)
+	return norm_image_patches
+
+
+def NCC(right_image_patches, left_image_patches, disparity):
+	right_image_patches = normalize(right_image_patches)
+	left_image_patches = normalize(left_image_patches)
+	unary_cost_map_multiplied = right_image_patches * shift_image(left_image_patches, disparity_x=-disparity)
+	should_be_nans = np.all(np.isnan(unary_cost_map_multiplied), axis=2)
+	unary_cost_map = np.nanmean(unary_cost_map_multiplied, axis=2)
+	NCC = np.where(should_be_nans, np.nan, unary_cost_map)
+	return NCC
+
+
+# ---------- 4  edges ---------- #
 
 def get_edges(height, width):
+	""" 4.2  Baseline solution """
 	i, j = np.indices((height, width))
 	indices = i * width + j
 
@@ -55,61 +83,81 @@ def get_edges(height, width):
 	return np.concatenate((left_right_edges, top_bottom_edges), axis=0).astype(np.int32)
 
 
-# ---------- 4.2  pairwise cost ---------- #
+# ---------- 4  pairwise cost ---------- #
 
 def pairwise_cost(K=DEFAULT_PAIRWISE_K, max_disp=MAX_DISP):
+	""" 4.2  Baseline solution - K if i!=j, else 0 """
 	pairwise_cost_mat = K * np.ones((max_disp, max_disp))
 	pairwise_cost_mat = pairwise_cost_mat * (~np.eye(max_disp).astype(bool))
 	return disparity_mat_to_int32(pairwise_cost_mat)
 
 
 def pairwise_cost_l1(K=DEFAULT_PAIRWISE_K, max_disp=MAX_DISP):
+	""" 4.3.a - pairwise_cost_l1 - K*|i-j| """
 	i, j = np.indices((max_disp, max_disp))
 	return disparity_mat_to_int32(K * np.abs(i-j))
 
 
 def pairwise_cost_l1_saturated(K=DEFAULT_PAIRWISE_K, max_disp=MAX_DISP, **kwargs):
+	""" 4.3.a - pairwise_cost_l1_saturated - min{ K*|i-j| , M } """
 	if "M" not in kwargs:
 		M = (np.ones((max_disp, max_disp)) * 10*K).astype(np.int32)
-	return np.minimum(pairwise_cost_l1(K=K, max_disp=max_disp), M)
+	else:
+		M = kwargs["M"]
+	return disparity_mat_to_int32(np.minimum(pairwise_cost_l1(K=K, max_disp=max_disp), M))
 
 
-# ---------- 4.2  unary cost ---------- #
+# ---------- 4  unary cost ---------- #
 
 def unary_cost(right_image, left_image, max_disp=MAX_DISP):
+	""" 4.2  - Baseline solution - grayscale """
 	assert (right_image.shape == left_image.shape) and (len(right_image.shape) == 3) and (right_image.shape[-1] == 3)
 	h, w, _ = right_image.shape
 
 	gray_right_image = utils.rgb2grey(right_image)
 	gray_left_image = utils.rgb2grey(left_image)
 	unary_cost_box = np.stack([np.abs(gray_right_image - shift_image(gray_left_image, disparity_x=-disparity))
-							   for disparity in range(1, max_disp + 1)],
+							   for disparity in range(max_disp)],
 							  axis=-1)
 	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
 
 
-def unary_cost_colored(right_image, left_image, max_disp=MAX_DISP, scale=2):
+def unary_cost_colored(right_image, left_image, max_disp=MAX_DISP, scale=1):
+	""" 4.3.b - unary_cost_colored """
 	assert (right_image.shape == left_image.shape) and (len(right_image.shape) == 3) and (right_image.shape[-1] == 3)
 	h, w, _ = right_image.shape
 
-	lab_right_image = color.rgb2lab(right_image)
-	lab_left_image = color.rgb2lab(left_image)
-	unary_cost_box = np.stack([np.linalg.norm(lab_right_image - shift_image(lab_left_image, disparity_x=-disparity), axis=2)
-							   for disparity in range(1, max_disp + 1)],
+	hsv_right_image = matplotlib.colors.rgb_to_hsv(right_image)
+	hsv_left_image = matplotlib.colors.rgb_to_hsv(left_image)
+	unary_cost_box = np.stack([np.linalg.norm(hsv_right_image - shift_image(hsv_left_image, disparity_x=-disparity), axis=2)
+							   for disparity in range(max_disp)],
 							  axis=-1)
 	unary_cost_box *= scale
 	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
 
 
-def unary_cost_patches(right_image, left_image, max_disp=MAX_DISP, scale=2, kernel_size=3):
+def unary_cost_patches(right_image, left_image, max_disp=MAX_DISP, scale=1, kernel_size=3, dist_method="SAD"):
+	""" 4.3.c - unary_cost_patches """
 	assert (right_image.shape == left_image.shape) and (len(right_image.shape) == 3) and (right_image.shape[-1] == 3)
 	h, w, _ = right_image.shape
 
-	lab_right_image_patches = unfold(color.rgb2lab(right_image), kernel_size=kernel_size)
-	lab_left_image_patches = unfold(color.rgb2lab(left_image), kernel_size=kernel_size)
-	unary_cost_box = np.stack([np.linalg.norm(lab_right_image_patches - shift_image(lab_left_image_patches, disparity_x=-disparity), axis=2)
-							   for disparity in range(1, max_disp + 1)],
-							  axis=-1)
+	gray_right_image_patches = unfold(np.expand_dims(utils.rgb2grey(right_image), axis=2), kernel_size=kernel_size)
+	gray_left_image_patches = unfold(np.expand_dims(utils.rgb2grey(left_image), axis=2), kernel_size=kernel_size)
+
+	unary_cost_maps = []
+	for disparity in range(max_disp):
+		if dist_method == "SAD":
+			unary_cost_maps.append(SAD(right_image_patches=gray_right_image_patches,
+										   left_image_patches=gray_left_image_patches,
+										   disparity=disparity))
+		elif dist_method == "NCC":
+			unary_cost_maps.append(1 - NCC(right_image_patches=gray_right_image_patches,
+										   left_image_patches=gray_left_image_patches,
+										   disparity=disparity))
+		else:
+			raise NotImplementedError("dist_method must be either \"SAD\" or \"NCC\"")
+	unary_cost_box = np.stack(unary_cost_maps, axis=-1)
+
 	unary_cost_box *= scale
 	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
 
@@ -127,7 +175,8 @@ def mask_for_3d_points(points_3d, P, max_depth, h, w):
 
 def images_to_disparity_map_and_3d_scene(scene, get_edges_fn, get_pairwise_cost_fn, get_unary_cost_fn,
 										 P_l, P_r, K_l, K_r, subsection="4.2",
-										 get_edges_kwargs=dict({}), get_pairwise_cost_kwargs=dict({}), get_unary_cost_kwargs=dict({})):
+										 get_edges_kwargs=dict({}), get_pairwise_cost_kwargs=dict({}), get_unary_cost_kwargs=dict({}),
+										 plot_results=True):
 	print("-" * 50)
 	print("Scene {0}:".format(scene))
 	# read images of scene
@@ -164,12 +213,13 @@ def images_to_disparity_map_and_3d_scene(scene, get_edges_fn, get_pairwise_cost_
 		accuracy, outlier_ration = evaluation.evaluate_disparity(gt_disparity=d, pred_disparity=filtered_disparity)
 		print("accuracy = {:.3f} \noutlier_ration = {:.1f}%".format(accuracy, outlier_ration * 100))
 
-	# show disparity map
-	visualization.plot_image(filtered_disparity)
+	if plot_results:
+		# show disparity map
+		visualization.plot_image(filtered_disparity)
 
-	# plot the 3D points and the camera
-	utils.plot_cameras(P=np.stack((P_l, P_r), axis=0),
-					   K=np.stack((K_l, K_r), axis=0),
-					   X=filtered_points_r,
-					   title="{subsection}_3D_plot_{scene}".format(subsection=subsection, scene=scene),
-					   point_colors=filtered_points_r_colors)
+		# plot the 3D points and the camera
+		utils.plot_cameras(P=np.stack((P_l, P_r), axis=0),
+						   K=np.stack((K_l, K_r), axis=0),
+						   X=filtered_points_r,
+						   title="{subsection}_3D_plot_{scene}".format(subsection=subsection, scene=scene),
+						   point_colors=filtered_points_r_colors)

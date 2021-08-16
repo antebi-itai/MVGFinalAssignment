@@ -82,10 +82,10 @@ def feature_extractor(np_image, model="resnet"):
 		def hook(model, input, output):
 			intermediate_results[name] = output.detach()
 		return hook
-	if model=="resnet":
+	if model == "resnet":
 		model = torchvision.models.resnet18(pretrained=True)
 		model.conv1.register_forward_hook(get_activation(key))
-	elif model=="vgg":
+	elif model == "vgg":
 		model = torchvision.models.vgg19(pretrained=True)
 		model.features[1].register_forward_hook(get_activation(key))
 	else:
@@ -109,11 +109,25 @@ def get_edges(height, width):
 	i, j = np.indices((height, width))
 	indices = i * width + j
 
-	left_right_edges = np.stack((indices, shift_image(indices, disparity_x=-1, disparity_y=0)), axis=-1).reshape(height * width, 2)
-	left_right_edges = left_right_edges[~np.isnan(left_right_edges).any(axis=1)]
-	top_bottom_edges = np.stack((indices, shift_image(indices, disparity_x=0, disparity_y=-1)), axis=-1).reshape(height * width, 2)
-	top_bottom_edges = top_bottom_edges[~np.isnan(top_bottom_edges).any(axis=1)]
-	return np.concatenate((left_right_edges, top_bottom_edges), axis=0).astype(np.int32)
+	to_right_edges = np.stack((indices, shift_image(indices, disparity_x=-1, disparity_y=0)), axis=-1).reshape(height * width, 2)
+	to_right_edges = to_right_edges[~np.isnan(to_right_edges).any(axis=1)]
+	to_down_edges = np.stack((indices, shift_image(indices, disparity_x=0, disparity_y=-1)), axis=-1).reshape(height * width, 2)
+	to_down_edges = to_down_edges[~np.isnan(to_down_edges).any(axis=1)]
+	return np.concatenate((to_right_edges, to_down_edges), axis=0).astype(np.int32)
+
+
+def get_all_surrounding_edges(height, width):
+	i, j = np.indices((height, width))
+	indices = i * width + j
+
+	to_right_up_edges = np.stack((indices, shift_image(indices, disparity_x=-1, disparity_y=1)), axis=-1).reshape(height * width, 2)
+	to_right_up_edges = to_right_up_edges[~np.isnan(to_right_up_edges).any(axis=1)]
+	to_right_down_edges = np.stack((indices, shift_image(indices, disparity_x=-1, disparity_y=-1)), axis=-1).reshape(height * width, 2)
+	to_right_down_edges = to_right_down_edges[~np.isnan(to_right_down_edges).any(axis=1)]
+
+	diagonal_edges = np.concatenate((to_right_up_edges, to_right_down_edges), axis=0).astype(np.int32)
+	non_diagonal_edges = get_edges(height, width)
+	return np.concatenate((non_diagonal_edges, diagonal_edges), axis=0).astype(np.int32)
 
 
 # ---------- 4  pairwise cost ---------- #
@@ -196,7 +210,7 @@ def unary_cost_patches(right_image, left_image, max_disp=MAX_DISP, scale=1, kern
 
 
 def unary_cost_features(right_image, left_image, max_disp=MAX_DISP, scale=1, model="resnet"):
-	""" 4.3.b - unary_cost_colored """
+	""" 4.3.d - unary_cost_features """
 	assert (right_image.shape == left_image.shape) and (len(right_image.shape) == 3) and (right_image.shape[-1] == 3)
 	h, w, _ = right_image.shape
 
@@ -207,6 +221,19 @@ def unary_cost_features(right_image, left_image, max_disp=MAX_DISP, scale=1, mod
 							  axis=-1)
 	unary_cost_box *= scale
 	return disparity_mat_to_int32(unary_cost_box.reshape(h * w, max_disp))
+
+
+def unary_cost_colors_features_combined(right_image, left_image, colored_scale=1, features_scale=1, model="resnet"):
+	""" 4.3.e - unary_cost_colors_features_combined """
+	unary_cost_mat_colored = unary_cost_colored(right_image=right_image, left_image=left_image, **dict({"scale": colored_scale}))
+	unary_cost_mat_features = unary_cost_features(right_image=right_image, left_image=left_image, **dict({"scale": features_scale, "model": model}))
+
+	inf_int = np.array(np.inf).astype(np.int32)
+	unary_cost_mat_colored = np.where(unary_cost_mat_colored == inf_int, np.nan, unary_cost_mat_colored)
+	unary_cost_mat_features = np.where(unary_cost_mat_features == inf_int, np.nan, unary_cost_mat_features)
+
+	unary_cost_combined = np.mean([colored_scale * unary_cost_mat_colored, features_scale * unary_cost_mat_features], axis=0)
+	return disparity_mat_to_int32(unary_cost_combined)
 
 
 # ---------- 4.2  calculate disparity map ---------- #
